@@ -1,13 +1,14 @@
 use std::ascii::AsciiExt;
 use std::char;
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::error::Error;
 use std::fmt;
 use std::str;
 
 use Array as TomlArray;
 use Table as TomlTable;
-use Value::{self, Array, Table}; //, Float, Integer, Boolean, Datetime};
+use Value::{self, Array, Table, Float, Integer, Boolean, Datetime};
 
 macro_rules! try {
     ($e:expr) => (match $e { Some(s) => s, None => return None })
@@ -71,21 +72,88 @@ impl Builder for SimpleBuilder {
     fn table(lead_ws: &str)-> TomlTable { BTreeMap::new() }
     fn array(vals: Vec<Value>, lead_ws: &str) -> TomlArray { TomlArray::new() }
     fn key(val: String, lead_ws: &str) -> String { val.to_string() }
-    fn value_string(parsed: String, raw: &str, lead_ws: &str) -> Value { unimplemented!() }
-    fn value_integer(parsed: i64, raw: &str, lead_ws: &str) -> Value { unimplemented!() }
-    fn value_float(parsed: f64, raw: &str, lead_ws: &str) -> Value { unimplemented!() }
-    fn value_boolean(parsed: bool, raw: &str, lead_ws: &str) -> Value { unimplemented!() }
-    fn value_datetime(parsed: String, raw: &str, lead_ws: &str) -> Value { unimplemented!() }
-    fn value_array(parsed: TomlArray, raw: &str, lead_ws: &str) -> Value { unimplemented!() }
-    fn value_table(parsed: TomlTable, raw: &str, lead_ws: &str) -> Value { unimplemented!() }
-    fn insert(t: &mut TomlTable, key: String, v: Value) -> bool { unimplemented!() }
-    fn insert_container<'b>(t: &'b mut TomlTable, keys: &[String])
-        -> Result<&'b mut TomlTable, ParserError> { unimplemented!() }
-    fn get_table<'b>(t: &'b mut TomlTable, key: &'b str) -> Option<&'b mut TomlTable> { unimplemented!() }
-    fn get_array<'b>(t: &'b mut TomlTable, key: &'b str) -> Option<&'b mut TomlArray> { unimplemented!() }
-    fn contains_table(t: &TomlTable) -> bool { unimplemented!() }
-    fn merge(new: &mut TomlTable, old: TomlTable) -> Result<(), String> { unimplemented!() }
-    fn push<'b>(arr: &'b mut TomlArray, val: Value) -> Result<(), &'b str> { unimplemented!() }
+    fn value_string(parsed: String, raw: &str, lead_ws: &str) -> Value { Value::String(parsed) }
+    fn value_integer(parsed: i64, raw: &str, lead_ws: &str) -> Value { Integer(parsed) }
+    fn value_float(parsed: f64, raw: &str, lead_ws: &str) -> Value { Float(parsed) }
+    fn value_boolean(parsed: bool, raw: &str, lead_ws: &str) -> Value { Boolean(parsed) }
+    fn value_datetime(parsed: String, raw: &str, lead_ws: &str) -> Value { Datetime(parsed) }
+    fn value_array(parsed: TomlArray, raw: &str, lead_ws: &str) -> Value { Array(parsed) }
+    fn value_table(parsed: TomlTable, raw: &str, lead_ws: &str) -> Value { Table(parsed) }
+    fn insert(table: &mut TomlTable, key: String, v: Value) -> bool {
+        match table.entry(key) {
+            Entry::Vacant(entry) => { entry.insert(v); true }
+            Entry::Occupied(_) => false
+        }
+    }
+    fn insert_container<'b>(mut cur: &'b mut TomlTable, keys: &[String])
+        -> Result<&'b mut TomlTable, ParserError> {
+        for part in keys {
+            let tmp = cur;
+
+            if tmp.contains_key(part) {
+                match *tmp.get_mut(part).unwrap() {
+                    Table(ref mut table) => {
+                        cur = table;
+                        continue
+                    }
+                    Array(ref mut array) => {
+                        match array.last_mut() {
+                            Some(&mut Table(ref mut table)) => cur = table,
+                            _ => {
+                                return Err(ParserError { // TODO: create real errors
+                                    lo: 0,
+                                    hi: 0,
+                                    desc: format!("array `{}` does not contain \
+                                                   tables", part)
+                                });
+                            }
+                        }
+                        continue
+                    }
+                    _ => {
+                        return Err(ParserError { // TODO: create real errors
+                            lo: 0,
+                            hi: 0,
+                            desc: format!("key `{}` was not previously a table",
+                                          part)
+                        });
+                    }
+                }
+            }
+
+            // Initialize an empty table as part of this sub-key
+            tmp.insert(part.clone(), Table(BTreeMap::new()));
+            match *tmp.get_mut(part).unwrap() {
+                Table(ref mut inner) => cur = inner,
+                _ => unreachable!(),
+            }
+        }
+        Ok(cur)
+    }
+    fn get_table<'b>(t: &'b mut TomlTable, key: &'b str) -> Option<&'b mut TomlTable> { 
+        t.get_mut(key).and_then(|x| match x { &mut Value::Table(ref mut s) => Some(s), _ => None })
+    }
+    fn get_array<'b>(t: &'b mut TomlTable, key: &'b str) -> Option<&'b mut TomlArray>{ 
+        t.get_mut(key).and_then(|x| match x { &mut Value::Array(ref mut s) => Some(s), _ => None })
+    }
+    fn contains_table(t: &TomlTable) -> bool {
+        t.values().any(|v| v.as_table().is_some())
+    }
+    fn merge(table: &mut TomlTable, value: TomlTable) -> Result<(), String> {
+        for (k, v) in value.into_iter() {
+            if table.insert(k.clone(), v).is_some() {
+                return Err(k);
+            }
+        }
+        Ok(())
+    }
+    fn push<'b>(vec: &'b mut TomlArray, value: Value) -> Result<(), &'b str> {
+        match vec.first() {
+            Some(ref v) if !v.same_type(&value) => return Err(v.type_str()),
+            _ => {}
+        }
+        Ok(())
+    }
 }
 
 /// Parser for converting a string to a TOML `Value` instance.
