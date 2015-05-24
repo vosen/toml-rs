@@ -35,8 +35,12 @@
 //! [1]: https://github.com/mojombo/toml
 //! [2]: https://github.com/BurntSushi/toml-test
 
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(unused_mut)]
+
 #![doc(html_root_url = "http://alexcrichton.com/toml-rs")]
-#![deny(missing_docs)]
+//#![deny(missing_docs)]
 #![cfg_attr(test, deny(warnings))]
 
 #[cfg(feature = "rustc-serialize")] extern crate rustc_serialize;
@@ -52,6 +56,7 @@ pub use self::encoder::{Encoder, Error, encode, encode_str};
 #[cfg(any(feature = "rustc-serialize", feature = "serde"))]
 pub use self::decoder::{Decoder, DecodeError, DecodeErrorKind, decode, decode_str};
 
+//mod parser2;
 mod parser;
 mod display;
 #[cfg(any(feature = "rustc-serialize", feature = "serde"))]
