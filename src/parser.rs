@@ -70,7 +70,7 @@ impl Builder for SimpleBuilder {
 
     fn top_table() -> TomlTable { BTreeMap::new() }
     fn table(lead_ws: &str)-> TomlTable { BTreeMap::new() }
-    fn array(vals: Vec<Value>, lead_ws: &str) -> TomlArray { TomlArray::new() }
+    fn array(vals: Vec<Value>, lead_ws: &str) -> TomlArray { vals }
     fn key(val: String, lead_ws: &str) -> String { val.to_string() }
     fn value_string(parsed: String, raw: &str, lead_ws: &str) -> Value { Value::String(parsed) }
     fn value_integer(parsed: i64, raw: &str, lead_ws: &str) -> Value { Integer(parsed) }
