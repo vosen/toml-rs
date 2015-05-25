@@ -152,6 +152,7 @@ impl Builder for SimpleBuilder {
             Some(ref v) if !v.same_type(&value) => return Err(v.type_str()),
             _ => {}
         }
+        vec.push(value);
         Ok(())
     }
 }
