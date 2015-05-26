@@ -44,7 +44,8 @@ pub trait Builder
     // If table doesn't contain key, adds value and returns true.
     // If table contains key returns false.
     fn insert(t: &mut Self::Table, key: Self::Key, value: Self::Value) -> bool;
-    fn insert_container<'b>(t: &'b mut Self::Table, keys: &[String])
+    fn insert_container<'b>(t: &'b mut Self::Table, keys: &[String],
+                            key_lo: usize, key_hi: usize)
         -> Result<&'b mut Self::Table, ParserError>;
     fn get_table<'b>(&'b mut Self::Table, &'b str) -> Option<&'b mut Self::Table>;
     fn get_array<'b>(&'b mut Self::Table, &'b str) -> Option<&'b mut Self::Array>;
@@ -85,7 +86,8 @@ impl Builder for SimpleBuilder {
             Entry::Occupied(_) => false
         }
     }
-    fn insert_container<'b>(mut cur: &'b mut TomlTable, keys: &[String])
+    fn insert_container<'b>(mut cur: &'b mut TomlTable, keys: &[String],
+                            key_lo: usize, key_hi: usize)
         -> Result<&'b mut TomlTable, ParserError> {
         for part in keys {
             let tmp = cur;
@@ -101,8 +103,8 @@ impl Builder for SimpleBuilder {
                             Some(&mut Table(ref mut table)) => cur = table,
                             _ => {
                                 return Err(ParserError { // TODO: create real errors
-                                    lo: 0,
-                                    hi: 0,
+                                    lo: key_lo,
+                                    hi: key_hi,
                                     desc: format!("array `{}` does not contain \
                                                    tables", part)
                                 });
@@ -112,8 +114,8 @@ impl Builder for SimpleBuilder {
                     }
                     _ => {
                         return Err(ParserError { // TODO: create real errors
-                            lo: 0,
-                            hi: 0,
+                            lo: key_lo,
+                            hi: key_hi,
                             desc: format!("key `{}` was not previously a table",
                                           part)
                         });
@@ -252,10 +254,6 @@ impl<'a, B:Builder> ParseSession<'a, B> {
         }
     }
 
-    fn last_pos(&self) -> usize {
-        self.cur.clone().last().map(|p| p.0).unwrap_or(0)
-    }
-
     fn next_pos(&self) -> usize {
         self.cur.clone().next().map(|p| p.0).unwrap_or(self.input.len())
     }
@@ -334,10 +332,10 @@ impl<'a, B:Builder> ParseSession<'a, B> {
             let pre_ws_end = self.next_pos();
             if self.eat('[') {
                 let array = self.eat('[');
-                let start = self.next_pos();
 
                 // Parse the name of the section
                 let mut keys = Vec::new();
+                let mut keys_end;
                 loop {
                     self.ws();
                     match self.key_name() {
@@ -347,6 +345,7 @@ impl<'a, B:Builder> ParseSession<'a, B> {
                     self.ws();
                     if self.eat(']') {
                         if array && !self.expect(']') { return None }
+                        keys_end = self.next_pos();
                         break
                     }
                     if !self.expect('.') { return None }
@@ -358,9 +357,9 @@ impl<'a, B:Builder> ParseSession<'a, B> {
                 if !self.values(&mut table) { return None }
                 if array {
                     self.insert_array(&mut ret, keys,
-                                      B::value_table(table, "", ""), start)
+                                      B::value_table(table, "", ""), pre_ws_end, keys_end)
                 } else {
-                    self.insert_table(&mut ret, keys, table, start)
+                    self.insert_table(&mut ret, keys, table, pre_ws_end, keys_end)
                 }
             } else {
                 if !self.values(&mut ret) { return None }
@@ -912,8 +911,8 @@ impl<'a, B:Builder> ParseSession<'a, B> {
     }
 
     fn insert_table(&mut self, into: &mut B::Table, mut keys: Vec<String>,
-                    value: B::Table, key_lo: usize) {
-        let into = match B::insert_container(into, &keys[..keys.len()-1]) {
+                    value: B::Table, key_lo: usize, key_hi: usize) {
+        let into = match B::insert_container(into, &keys[..keys.len()-1], key_lo, key_hi) {
             Ok(into) => into,
             Err(err) => { self.errors.push(err); return }
         };
@@ -926,7 +925,7 @@ impl<'a, B:Builder> ParseSession<'a, B> {
                 if !any_tables && !added {
                     self.errors.push(ParserError {
                         lo: key_lo,
-                        hi: key_lo + key_text.len(),
+                        hi: key_hi,
                         desc: format!("redefinition of table `{}`", key_text),
                     });
                 }
@@ -935,7 +934,7 @@ impl<'a, B:Builder> ParseSession<'a, B> {
                     Err(k) => {
                         self.errors.push(ParserError {
                             lo: key_lo,
-                            hi: key_lo + key_text.len(),
+                            hi: key_hi,
                             desc: format!("duplicate key `{}` in table", k),
                         });
                     }
@@ -944,7 +943,7 @@ impl<'a, B:Builder> ParseSession<'a, B> {
             None => {
                 self.errors.push(ParserError {
                     lo: key_lo,
-                    hi: key_lo + key_text.len(),
+                    hi: key_hi,
                     desc: format!("duplicate key `{}` in table", key_text),
                 });
             }
@@ -952,8 +951,8 @@ impl<'a, B:Builder> ParseSession<'a, B> {
     }
 
     fn insert_array(&mut self, into: &mut B::Table, mut keys: Vec<String>,
-                    value: B::Value, key_lo: usize) {
-        let into = match B::insert_container(into, &keys[..keys.len()-1]) {
+                    value: B::Value, key_lo: usize, key_hi: usize) {
+        let into = match B::insert_container(into, &keys[..keys.len()-1], key_lo, key_hi) {
             Ok(into) => into,
             Err(err) => { self.errors.push(err); return }
         };
@@ -968,7 +967,7 @@ impl<'a, B:Builder> ParseSession<'a, B> {
                     Err(array_type)=> {
                         self.errors.push(ParserError {
                             lo: key_lo,
-                            hi: key_lo + key_text.len(),
+                            hi: key_hi,
                             desc: format!("expected type `{}`, found type `{}`",
                                           array_type, value_type),
                         })
@@ -978,7 +977,7 @@ impl<'a, B:Builder> ParseSession<'a, B> {
             _ => {
                 self.errors.push(ParserError {
                     lo: key_lo,
-                    hi: key_lo + key_text.len(),
+                    hi: key_hi,
                     desc: format!("key `{}` was previously not an array", key_text),
                 });
             }
@@ -1006,11 +1005,14 @@ mod tests {
     use Parser;
 
     macro_rules! bad {
-        ($s:expr, $msg:expr) => ({
+        ($s:expr, $lo: expr, $hi: expr, $msg:expr) => ({
             let mut p = Parser::new($s);
             assert!(p.parse().is_none());
-            assert!(p.errors.iter().any(|e| e.desc.contains($msg)),
-                    "errors: {:?}", p.errors);
+            assert!(p.errors.iter().any(
+                    |e| { e.desc.contains($msg) && e.lo == $lo && e.hi == $hi }
+                ),
+                "errors: {:?}",
+                p.errors);
         })
     }
 
@@ -1386,15 +1388,15 @@ trimmed in raw strings.
 
     #[test]
     fn bad_unicode_codepoint() {
-        bad!("foo = \"\\uD800\"", "not a valid unicode codepoint");
+        bad!("foo = \"\\uD800\"", 9, 13, "not a valid unicode codepoint");
     }
 
     #[test]
     fn bad_strings() {
-        bad!("foo = \"\\uxx\"", "expected 4 hex digits");
-        bad!("foo = \"\\u\"", "expected 4 hex digits");
-        bad!("foo = \"\\", "unterminated");
-        bad!("foo = '", "unterminated");
+        bad!("foo = \"\\uxx\"", 8, 9, "expected 4 hex digits");
+        bad!("foo = \"\\u\"", 8, 9, "expected 4 hex digits");
+        bad!("foo = \"\\", 7, 8, "unterminated");
+        bad!("foo = '", 6, 7, "unterminated");
     }
 
     #[test]
@@ -1426,24 +1428,34 @@ trimmed in raw strings.
             a = [2]
             [[a]]
             b = 5
-        ", "expected type `integer`, found type `table`");
+        ",
+        33, 38,
+        "expected type `integer`, found type `table`");
         bad!("
             a = 1
             [a.b]
-        ", "key `a` was not previously a table");
+        ",
+        31, 36,
+        "key `a` was not previously a table");
         bad!("
             a = []
             [a.b]
-        ", "array `a` does not contain tables");
+        ",
+        32, 37,
+        "array `a` does not contain tables");
         bad!("
             a = []
             [[a.b]]
-        ", "array `a` does not contain tables");
+        ",
+        32, 39,
+        "array `a` does not contain tables");
         bad!("
             [a]
             b = { c = 2, d = {} }
             [a.b]
             c = 2
-        ", "duplicate key `c` in table");
+        ",
+        63, 68,
+        "duplicate key `c` in table");
     }
 }
