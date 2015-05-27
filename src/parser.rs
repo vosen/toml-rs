@@ -14,7 +14,7 @@ macro_rules! try {
     ($e:expr) => (match $e { Some(s) => s, None => return None })
 }
 
-trait ShowType {
+pub trait ShowType {
     fn type_str(&self) -> &'static str;
 }
 
@@ -30,7 +30,6 @@ pub trait Builder
     type Key;
     type Value;
 
-    fn top_table() -> Self::Table;
     fn table(lead_ws: &str) -> Self::Table;
     fn array(vals: Vec<Self::Value>, lead_ws: &str) -> Self::Array;
     fn key(val: String, lead_ws: &str) -> Self::Key;
@@ -69,7 +68,6 @@ impl Builder for SimpleBuilder {
     type Key = String;
     type Value = Value;
 
-    fn top_table() -> TomlTable { BTreeMap::new() }
     fn table(lead_ws: &str)-> TomlTable { BTreeMap::new() }
     fn array(vals: Vec<Value>, lead_ws: &str) -> TomlArray { vals }
     fn key(val: String, lead_ws: &str) -> String { val.to_string() }
@@ -173,7 +171,7 @@ pub struct Parser<'a> {
     pub errors: Vec<ParserError>,
 }
 
-struct ParseSession<'a, B:Builder> {
+pub struct ParseSession<'a, B:Builder> {
     input: &'a str,
     cur: str::CharIndices<'a>,
     pub errors: Vec<ParserError>,
@@ -322,8 +320,8 @@ impl<'a, B:Builder> ParseSession<'a, B> {
         }
     }
 
-    fn parse(&mut self) -> Option<B::Table> {
-        let mut ret = B::top_table();
+    pub fn parse(&mut self) -> Option<B::Table> {
+        let mut ret = None;
         while self.peek(0).is_some() {
             let pre_ws_start = self.next_pos();
             self.ws();
@@ -331,6 +329,7 @@ impl<'a, B:Builder> ParseSession<'a, B> {
             if self.comment() { continue }
             let pre_ws_end = self.next_pos();
             if self.eat('[') {
+                if ret.is_none() { ret = Some(B::table(&self.input[0..pre_ws_end])) }
                 let array = self.eat('[');
 
                 // Parse the name of the section
@@ -356,19 +355,21 @@ impl<'a, B:Builder> ParseSession<'a, B> {
                 let mut table = B::table(&self.input[pre_ws_start..pre_ws_end]);
                 if !self.values(&mut table) { return None }
                 if array {
-                    self.insert_array(&mut ret, keys,
+                    self.insert_array(ret.as_mut().unwrap(), keys,
                                       B::value_table(table, "", ""), pre_ws_end, keys_end)
                 } else {
-                    self.insert_table(&mut ret, keys, table, pre_ws_end, keys_end)
+                    self.insert_table(ret.as_mut().unwrap(), keys, table, pre_ws_end, keys_end)
                 }
             } else {
-                if !self.values(&mut ret) { return None }
+                if ret.is_none() { ret = Some(B::table(&self.input[0..pre_ws_end])) }
+                if !self.values(ret.as_mut().unwrap()) { return None }
             }
         }
         if self.errors.len() > 0 {
             None
         } else {
-            Some(ret)
+            if ret.is_none() { ret = Some(B::table(self.input)) }
+            ret
         }
     }
 
