@@ -50,11 +50,12 @@ pub trait Builder
     fn get_array<'b>(&'b mut Self::Table, &'b str) -> Option<&'b mut Self::Array>;
     fn contains_table(&Self::Table) -> bool;
     // Moves all (key, value) pairs from `from` into `into` table.
-    // Returns Err(String) if the key already exists in the `into` table.
+    // Returns Err(key) if the key already exists in the `into` table.
     fn merge(into: &mut Self::Table, from: Self::Table) -> Result<(), String>;
-    // Returns Err(&str) if the if the array is of a different type.
+    // Returns Err(key) if the if the array is of a different type.
     // &str returned by the error conditions is the type_str() of the array
     fn push<'b>(&'b mut Self::Array, Self::Value) -> Result<(), &'b str>;
+    fn set_trailing_aux(&mut Self::Table, &str);
 }
 
 struct SimpleBuilder;
@@ -100,7 +101,7 @@ impl Builder for SimpleBuilder {
                         match array.last_mut() {
                             Some(&mut Table(ref mut table)) => cur = table,
                             _ => {
-                                return Err(ParserError { // TODO: create real errors
+                                return Err(ParserError {
                                     lo: key_lo,
                                     hi: key_hi,
                                     desc: format!("array `{}` does not contain \
@@ -111,7 +112,7 @@ impl Builder for SimpleBuilder {
                         continue
                     }
                     _ => {
-                        return Err(ParserError { // TODO: create real errors
+                        return Err(ParserError {
                             lo: key_lo,
                             hi: key_hi,
                             desc: format!("key `{}` was not previously a table",
@@ -155,6 +156,7 @@ impl Builder for SimpleBuilder {
         vec.push(value);
         Ok(())
     }
+    fn set_trailing_aux(t: &mut Self::Table, a: &str) { }
 }
 
 /// Parser for converting a string to a TOML `Value` instance.
@@ -175,6 +177,7 @@ pub struct ParseSession<'a, B:Builder> {
     input: &'a str,
     cur: str::CharIndices<'a>,
     pub errors: Vec<ParserError>,
+    aux_text: &'a str, // last parsed aux text: whitespace or comments
     builder: B
 }
 
@@ -248,7 +251,8 @@ impl<'a, B:Builder> ParseSession<'a, B> {
             input: s,
             cur: s.char_indices(),
             errors: Vec::new(),
-            builder: b
+            builder: b,
+            aux_text: ""
         }
     }
 
@@ -320,16 +324,38 @@ impl<'a, B:Builder> ParseSession<'a, B> {
         }
     }
 
-    pub fn parse(&mut self) -> Option<B::Table> {
-        let mut ret = None;
-        while self.peek(0).is_some() {
-            let pre_ws_start = self.next_pos();
+    fn skip_aux(&mut self) {
+        let start = self.next_pos();
+        loop {
             self.ws();
             if self.newline() { continue }
             if self.comment() { continue }
-            let pre_ws_end = self.next_pos();
+            break;
+        }
+        let end = self.next_pos();
+        self.aux_text = &self.input[start..end];
+    }
+
+    fn skip_ws(&mut self) {
+        let start = self.next_pos();
+        self.ws();
+        let end = self.next_pos();
+        self.aux_text = &self.input[start..end];
+    }
+
+    fn take_aux<'b>(&'b mut self) -> &'a str {
+        let temp = self.aux_text;
+        self.aux_text = "";
+        temp
+    }
+
+    pub fn parse(&mut self) -> Option<B::Table> {
+        let mut ret = None;
+        while self.peek(0).is_some() {
+            self.skip_aux();
+            let keys_start = self.next_pos();
             if self.eat('[') {
-                if ret.is_none() { ret = Some(B::table(&self.input[0..pre_ws_end])) }
+                if ret.is_none() { ret = Some(B::table(&self.take_aux())) }
                 let array = self.eat('[');
 
                 // Parse the name of the section
@@ -352,16 +378,17 @@ impl<'a, B:Builder> ParseSession<'a, B> {
                 if keys.len() == 0 { return None }
 
                 // Build the section table
-                let mut table = B::table(&self.input[pre_ws_start..pre_ws_end]);
+                let mut table = B::table(&self.take_aux());
                 if !self.values(&mut table) { return None }
+                B::set_trailing_aux(ret.as_mut().unwrap(), self.take_aux());
                 if array {
                     self.insert_array(ret.as_mut().unwrap(), keys,
-                                      B::value_table(table, "", ""), pre_ws_end, keys_end)
+                                      B::value_table(table, "", ""), keys_start, keys_end)
                 } else {
-                    self.insert_table(ret.as_mut().unwrap(), keys, table, pre_ws_end, keys_end)
+                    self.insert_table(ret.as_mut().unwrap(), keys, table, keys_start, keys_end)
                 }
             } else {
-                if ret.is_none() { ret = Some(B::table(&self.input[0..pre_ws_end])) }
+                if ret.is_none() { ret = Some(B::table(&self.take_aux())) }
                 if !self.values(ret.as_mut().unwrap()) { return None }
             }
         }
@@ -414,11 +441,7 @@ impl<'a, B:Builder> ParseSession<'a, B> {
     // and false in case of error.
     fn values(&mut self, into: &mut B::Table) -> bool {
         loop {
-            let key_ws_start = self.next_pos();
-            self.ws();
-            if self.newline() { continue }
-            if self.comment() { continue }
-            let key_ws_end = self.next_pos();
+            self.skip_aux();
             match self.peek(0) {
                 Some((_, '[')) => break,
                 Some(..) => {}
@@ -435,7 +458,8 @@ impl<'a, B:Builder> ParseSession<'a, B> {
                 Some(value) => value,
                 None => return false,
             };
-            self.insert(into, B::key(key, &self.input[key_ws_start..key_ws_end]),
+            let aux = &self.take_aux();
+            self.insert(into, B::key(key, aux),
                         value, key_lo, key_hi);
         }
         return true
@@ -855,7 +879,7 @@ impl<'a, B:Builder> ParseSession<'a, B> {
             // Attempt to parse a value, triggering an error if it's the wrong
             // type.
             let start = self.next_pos();
-            let value = try!(self.value(0));
+            let value = try!(self.value(0)); // TODO: pass something sensible
             let end = self.next_pos();
             let expected = type_str.unwrap_or(value.type_str());
             if value.type_str() != expected {
@@ -888,7 +912,7 @@ impl<'a, B:Builder> ParseSession<'a, B> {
             let lo = self.next_pos();
             let key = try!(self.key_name());
             if !self.keyval_sep() { return None }
-            let value = try!(self.value(0));
+            let value = try!(self.value(0)); // TODO: pass something sensible
             self.insert(&mut ret, B::key(key, ""), value, lo, lo);
 
             self.ws();
