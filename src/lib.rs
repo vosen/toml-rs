@@ -38,6 +38,7 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 #![allow(unused_mut)]
+#![allow(unused_imports)]
 
 #![doc(html_root_url = "http://alexcrichton.com/toml-rs")]
 //#![deny(missing_docs)]

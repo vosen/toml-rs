@@ -30,6 +30,7 @@ pub trait Builder
     type Key;
     type Value;
 
+    fn root_table(lead_ws: &str) -> Self::Table;
     fn table(lead_ws: &str) -> Self::Table;
     fn array(vals: Vec<Self::Value>, lead_ws: &str) -> Self::Array;
     fn key(val: String, lead_ws: &str) -> Self::Key;
@@ -69,6 +70,7 @@ impl Builder for SimpleBuilder {
     type Key = String;
     type Value = Value;
 
+    fn root_table(lead_ws: &str)-> TomlTable { BTreeMap::new() }
     fn table(lead_ws: &str)-> TomlTable { BTreeMap::new() }
     fn array(vals: Vec<Value>, lead_ws: &str) -> TomlArray { vals }
     fn key(val: String, lead_ws: &str) -> String { val.to_string() }
@@ -355,7 +357,7 @@ impl<'a, B:Builder> ParseSession<'a, B> {
             self.skip_aux();
             let keys_start = self.next_pos();
             if self.eat('[') {
-                if ret.is_none() { ret = Some(B::table(&self.take_aux())) }
+                if ret.is_none() { ret = Some(B::root_table(&self.take_aux())) }
                 let array = self.eat('[');
 
                 // Parse the name of the section
@@ -388,14 +390,14 @@ impl<'a, B:Builder> ParseSession<'a, B> {
                     self.insert_table(ret.as_mut().unwrap(), keys, table, keys_start, keys_end)
                 }
             } else {
-                if ret.is_none() { ret = Some(B::table(&self.take_aux())) }
+                if ret.is_none() { ret = Some(B::root_table(&self.take_aux())) }
                 if !self.values(ret.as_mut().unwrap()) { return None }
             }
         }
         if self.errors.len() > 0 {
             None
         } else {
-            if ret.is_none() { ret = Some(B::table(self.input)) }
+            if ret.is_none() { ret = Some(B::root_table(self.input)) }
             ret
         }
     }
